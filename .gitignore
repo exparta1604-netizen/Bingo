@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Django
+db.sqlite3
+db.sqlite3-journal
+/staticfiles/
+/media/
+*.log
+
+# Archivos subidos por usuarios (rutas antiguas antes de MEDIA_ROOT)
+/bingo/imagen_premio_mayor/
+/bingo/video_promocional/
+
+# Variables de entorno y secretos
+.env
+.env.*
+!.env.example
+
+# IDEs y sistema operativo
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store

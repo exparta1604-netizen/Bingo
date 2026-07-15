@@ -1,0 +1,12 @@
+# Dependencias del proyecto CoopBingo
+# Instalar con: pip install -r requirements.txt
+
+Django>=6.0,<6.1
+daphne>=4.1            # Servidor ASGI (WebSockets)
+channels>=4.1          # Django Channels (tiempo real)
+channels-redis>=4.2    # Capa de canales sobre Redis
+celery>=5.4            # Tareas en segundo plano (fábrica de cartones)
+redis>=5.0             # Cliente Redis (broker de Celery y Channels)
+xhtml2pdf>=0.2.16      # Generación de PDF (cartones y reportes)
+openpyxl>=3.1          # Reportes en Excel
+Pillow>=10.0           # Soporte de imágenes (ImageField)
