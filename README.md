@@ -141,4 +141,4 @@ La documentación técnica completa (arquitectura, modelo de datos, manual de us
 
 ## 👥 Créditos
 
-Proyecto colaborativo académico. Mejoras de seguridad, corrección de errores y documentación por **Jean Arauz**.
+Proyecto colaborativo académico. Mejoras de seguridad, corrección de errores y documentación por **Jean Arauz** y **David Vera**.
