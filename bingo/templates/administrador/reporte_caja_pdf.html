@@ -46,7 +46,7 @@
       <tr>
         <td>Semana {{ ap.numerosemana }} - {{ ap.fechaplanificadadada|date:"d/m/Y" }}</td>
         <td>{{ ap.idsocio.primerapellidosocio }} {{ ap.idsocio.primernombresocio }}</td>
-        <td>${{ ap.montoaportesemanal }}</td>
+        <td>${{ ap.idregalo.valorregalo }}</td>
         <td class="{% if ap.estadoaporte == 'Al Dia' %}status-ok{% else %}status-bad{% endif %}">{{ ap.estadoaporte|upper }}</td>
         <td>{{ ap.metodoingreso|default:"No registrado" }}</td>
       </tr>

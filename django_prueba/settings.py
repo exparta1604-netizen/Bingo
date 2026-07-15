@@ -8,8 +8,13 @@ https://docs.djangoproject.com/en/6.0/topics/settings/
 
 For the full list of settings and their values, see
 https://docs.djangoproject.com/en/6.0/ref/settings/
+
+Configuración sensible (SECRET_KEY, DEBUG, hosts, Redis) se lee de variables
+de entorno para no exponer secretos en el repositorio. En desarrollo funciona
+sin configurar nada; en producción definir las variables indicadas.
 """
 
+import os
 from pathlib import Path
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -20,12 +25,23 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # See https://docs.djangoproject.com/en/6.0/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-x4e79(s#1y1215rx7%%0*5$5tr_!od=44ovops-a_2wa!v!&i^'
+# En producción definir DJANGO_SECRET_KEY; la clave por defecto es SOLO para desarrollo.
+SECRET_KEY = os.environ.get(
+    'DJANGO_SECRET_KEY',
+    'django-insecure-x4e79(s#1y1215rx7%%0*5$5tr_!od=44ovops-a_2wa!v!&i^'
+)
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+# En producción definir DJANGO_DEBUG=false
+DEBUG = os.environ.get('DJANGO_DEBUG', 'true').lower() in ('true', '1', 'yes')
 
-ALLOWED_HOSTS = []
+# En producción definir DJANGO_ALLOWED_HOSTS="midominio.com,www.midominio.com"
+ALLOWED_HOSTS = [h.strip() for h in os.environ.get('DJANGO_ALLOWED_HOSTS', '').split(',') if h.strip()]
+if DEBUG and not ALLOWED_HOSTS:
+    ALLOWED_HOSTS = ['localhost', '127.0.0.1']
+
+# Orígenes confiables para CSRF detrás de HTTPS/proxy (ej: "https://midominio.com")
+CSRF_TRUSTED_ORIGINS = [o.strip() for o in os.environ.get('DJANGO_CSRF_TRUSTED_ORIGINS', '').split(',') if o.strip()]
 
 
 # Application definition
@@ -73,15 +89,28 @@ WSGI_APPLICATION = 'django_prueba.wsgi.application'
 
 ASGI_APPLICATION = 'django_prueba.asgi.application'
 
-ASGI_APPLICATION = 'django_prueba.asgi.application'
-CHANNEL_LAYERS = {
-    'default': {
-        'BACKEND': 'channels_redis.core.RedisChannelLayer',
-        'CONFIG': {
-            "hosts": [('127.0.0.1', 6379)],
+# Capa de canales para WebSockets.
+# Por defecto usa Redis; para desarrollo sin Redis definir DJANGO_USE_REDIS=false
+# (la capa en memoria solo sirve para un único proceso, NO usar en producción).
+REDIS_HOST = os.environ.get('REDIS_HOST', '127.0.0.1')
+REDIS_PORT = int(os.environ.get('REDIS_PORT', '6379'))
+
+if os.environ.get('DJANGO_USE_REDIS', 'true').lower() in ('true', '1', 'yes'):
+    CHANNEL_LAYERS = {
+        'default': {
+            'BACKEND': 'channels_redis.core.RedisChannelLayer',
+            'CONFIG': {
+                "hosts": [(REDIS_HOST, REDIS_PORT)],
+            },
         },
-    },
-}
+    }
+else:
+    CHANNEL_LAYERS = {
+        'default': {
+            'BACKEND': 'channels.layers.InMemoryChannelLayer',
+        },
+    }
+
 # Database
 # https://docs.djangoproject.com/en/6.0/ref/settings/#databases
 
@@ -102,6 +131,7 @@ AUTH_PASSWORD_VALIDATORS = [
     },
     {
         'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator',
+        'OPTIONS': {'min_length': 8},
     },
     {
         'NAME': 'django.contrib.auth.password_validation.CommonPasswordValidator',
@@ -115,9 +145,9 @@ AUTH_PASSWORD_VALIDATORS = [
 # Internationalization
 # https://docs.djangoproject.com/en/6.0/topics/i18n/
 
-LANGUAGE_CODE = 'en-us'
+LANGUAGE_CODE = 'es-ec'
 
-TIME_ZONE = 'UTC'
+TIME_ZONE = 'America/Guayaquil'
 
 USE_I18N = True
 
@@ -128,10 +158,74 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/6.0/howto/static-files/
 
 STATIC_URL = 'static/'
+STATIC_ROOT = BASE_DIR / 'staticfiles'
+
+# Archivos subidos por usuarios (avatares, comprobantes, imágenes de premios)
+MEDIA_URL = '/media/'
+MEDIA_ROOT = BASE_DIR / 'media'
+
+# Rutas de autenticación (usadas por @login_required)
+LOGIN_URL = 'login'
+LOGIN_REDIRECT_URL = 'inicio'
+LOGOUT_REDIRECT_URL = 'inicio'
+
+# Límite de tamaño para subidas (5 MB) — evita abusos con comprobantes/avatares gigantes
+DATA_UPLOAD_MAX_MEMORY_SIZE = 5 * 1024 * 1024
+FILE_UPLOAD_MAX_MEMORY_SIZE = 5 * 1024 * 1024
+
+DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+
+# ==========================================================
+# SEGURIDAD ADICIONAL
+# ==========================================================
+# Cabeceras y cookies seguras. Las opciones que exigen HTTPS
+# solo se activan cuando DEBUG=False (producción).
+SESSION_COOKIE_HTTPONLY = True
+CSRF_COOKIE_HTTPONLY = True
+X_FRAME_OPTIONS = 'DENY'
+SECURE_CONTENT_TYPE_NOSNIFF = True
+SECURE_REFERRER_POLICY = 'same-origin'
+
+if not DEBUG:
+    SECURE_SSL_REDIRECT = True
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+    SECURE_HSTS_SECONDS = 60 * 60 * 24 * 30  # 30 días; subir cuando HTTPS esté estable
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+
+# Sesiones expiran a las 8 horas de inactividad
+SESSION_COOKIE_AGE = 60 * 60 * 8
+
+
+# ==========================================================
+# LOGGING — reemplaza los print() sueltos y deja rastro real
+# ==========================================================
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'simple': {
+            'format': '[{asctime}] {levelname} {name}: {message}',
+            'style': '{',
+        },
+    },
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+            'formatter': 'simple',
+        },
+    },
+    'loggers': {
+        'django': {'handlers': ['console'], 'level': 'INFO'},
+        'bingo': {'handlers': ['console'], 'level': 'INFO'},
+    },
+}
 
 
 # CONFIGURACIÓN DE CELERY Y REDIS
-CELERY_BROKER_URL = 'redis://127.0.0.1:6379/0'
+CELERY_BROKER_URL = os.environ.get('CELERY_BROKER_URL', f'redis://{REDIS_HOST}:{REDIS_PORT}/0')
 CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
-
+CELERY_TIMEZONE = TIME_ZONE

@@ -1,4 +1,6 @@
 import json
+import logging
+import secrets
 from django.shortcuts import render, redirect, get_object_or_404
 from django.contrib.auth import login, update_session_auth_hash, logout
 from .models import (
@@ -6,9 +8,17 @@ from .models import (
     Bingo, Ahorro, Jugador, PartidaBingo, Carton, CartonPartidaBingo,
     PlataformaJuego, SesionJuego, Regalo, AporteSemanal, ConfiguracionWeb, UnidadMonetaria, MensajeChat
 )
-from .services import generar_matriz_bingo, generar_lote_cartones, actualizar_socio_y_credenciales, actualizar_jugador_y_credenciales, actualizar_avatar_perfil, validar_carton_hibrido
+from .services import (
+    generar_matriz_bingo, generar_lote_cartones, actualizar_socio_y_credenciales,
+    actualizar_jugador_y_credenciales, actualizar_avatar_perfil, validar_carton_hibrido,
+    validar_matriz_carton
+)
 from django.contrib import messages
 from django.contrib.auth.models import User
+from django.contrib.auth.password_validation import validate_password
+from django.core.cache import cache
+from django.core.exceptions import ValidationError
+from django.core.validators import validate_email
 from django.db.models import Sum, Q, ProtectedError
 from django.contrib.auth.decorators import login_required
 from datetime import datetime, date, timedelta
@@ -16,7 +26,6 @@ from django.db import transaction
 from django.http import JsonResponse, HttpResponse
 import uuid
 from django.utils import timezone
-import random
 from channels.layers import get_channel_layer
 from asgiref.sync import async_to_sync
 from .tasks import fabricar_cartones_maestros_task
@@ -24,6 +33,11 @@ from django.template.loader import get_template
 from xhtml2pdf import pisa
 import openpyxl
 from openpyxl.styles import Font, Alignment, PatternFill
+
+logger = logging.getLogger('bingo')
+
+# Máximo de cartones que un jugador puede acumular por evento de bingo
+MAX_CARTONES_POR_BINGO = 15
 
 # Create your views here.
 
@@ -125,13 +139,24 @@ def bingo_publico(request):
 def inicio_sesion(request):
   if request.user.is_authenticated: return redirect('dashboard' if request.user.is_staff else 'inicio')
   if request.method == 'POST':
-    identificador = request.POST.get('identificador')
-    password = request.POST.get('password')
+    identificador = (request.POST.get('identificador') or '').strip()
+    password = request.POST.get('password') or ''
+
+    # ==========================================================
+    # SEGURIDAD: FRENO ANTI FUERZA BRUTA (5 intentos / 5 minutos)
+    # ==========================================================
+    clave_intentos = f"login_intentos_{identificador.lower()}_{obtener_ip_cliente(request)}"
+    intentos = cache.get(clave_intentos, 0)
+    if intentos >= 5:
+      messages.error(request, "Demasiados intentos fallidos. Espera 5 minutos e inténtalo de nuevo.")
+      return render(request, 'cuentas/inicio_sesion.html')
+
     user = User.objects.filter(Q(username=identificador) | Q(email=identificador)).first()
     if user and user.check_password(password):
       if not user.is_active:
         messages.error(request, "Esta cuenta ha sido desactivada o suspendida del sistema.")
-        return redirect('inicio_sesion')
+        return redirect('login')
+      cache.delete(clave_intentos)
       login(request, user)
       socio = Socio.objects.filter(cisocio=user.username).first()
       jugador = Jugador.objects.filter(cedulaidentidadjugador=user.username).first()
@@ -147,6 +172,7 @@ def inicio_sesion(request):
       messages.success(request, f"¡Bienvenido de vuelta, {nombre_mostrar}!")
       return redirect('dashboard' if user.is_staff else 'inicio')
     else:
+      cache.set(clave_intentos, intentos + 1, timeout=300)
       messages.error(request, "Credenciales incorrectas. Verifica tu usuario/cédula/correo y contraseña.")
   return render(request, 'cuentas/inicio_sesion.html')
 
@@ -187,6 +213,21 @@ def registro_socio(request):
       messages.error(request, "Esta cédula ya está registrada.")
       return redirect('registro_socio')
 
+    # ==========================================================
+    # SEGURIDAD: validar correo y contraseña con las reglas de Django
+    # ==========================================================
+    try:
+      validate_email(email)
+    except ValidationError:
+      messages.error(request, "El correo electrónico ingresado no es válido.")
+      return redirect('registro_socio')
+
+    try:
+      validate_password(password)
+    except ValidationError as e:
+      messages.error(request, " ".join(e.messages))
+      return redirect('registro_socio')
+
     try:
       fecha_nac = datetime.strptime(fecha_nacimiento_str, '%Y-%m-%d').date()
       if fecha_nac > date.today():
@@ -197,25 +238,26 @@ def registro_socio(request):
       return redirect('registro_socio')
 
     try:
-      user = User.objects.create_user(username=cedula, email=email, password=password, first_name=primer_nombre, last_name=primer_apellido)
-      tipo_base = TipoSocio.objects.first()
-      if not tipo_base:
-        user.delete() 
-        messages.error(request, "Error crítico: No hay 'Tipos de Socio'.")
-        return redirect('registro_socio')
-      
-      Socio.objects.create(
-        idtiposocio=tipo_base, primernombresocio=primer_nombre, segundonombresocio=segundo_nombre,
-        primerapellidosocio=primer_apellido, segundoapellidosocio=segundo_apellido, cisocio=cedula,
-        fechanacimientosocio=fecha_nac, telefonopersonalsocio=telefono_personal,
-        direcciondomiciliosocio=direccion, sexosocio=sexo, estadosocio='Activo'
-      )
+      # Transacción atómica: si falla la creación del Socio, el User se revierte solo
+      with transaction.atomic():
+        tipo_base = TipoSocio.objects.first()
+        if not tipo_base:
+          messages.error(request, "Error crítico: No hay 'Tipos de Socio'.")
+          return redirect('registro_socio')
+
+        user = User.objects.create_user(username=cedula, email=email, password=password, first_name=primer_nombre, last_name=primer_apellido)
+        Socio.objects.create(
+          idtiposocio=tipo_base, primernombresocio=primer_nombre, segundonombresocio=segundo_nombre,
+          primerapellidosocio=primer_apellido, segundoapellidosocio=segundo_apellido, cisocio=cedula,
+          fechanacimientosocio=fecha_nac, telefonopersonalsocio=telefono_personal,
+          direcciondomiciliosocio=direccion, sexosocio=sexo, estadosocio='Activo'
+        )
       login(request, user)
       request.session['preguntar_jugador'] = True
       request.session['user_nombre'] = primer_nombre
       return redirect('inicio')
     except Exception as e:
-      if 'user' in locals() and user.id: user.delete() 
+      logger.exception("Error registrando socio")
       messages.error(request, f"Error en el formulario: {str(e)}")
       return redirect('registro_socio')
   return render(request, 'cuentas/registro_socio.html')
@@ -249,15 +291,31 @@ def registro_jugador(request):
       if User.objects.filter(username=cedula).exists():
         messages.error(request, "Cédula ya registrada.")
         return redirect('registro_jugador')
+
+      # SEGURIDAD: validar correo y contraseña con las reglas de Django
       try:
-        user = User.objects.create_user(username=cedula, email=correo, password=password, first_name=nombres, last_name=apellidos)
-        Jugador.objects.create(aliasjugador=alias, nombresjugador=nombres, apellidosjugador=apellidos, cedulaidentidadjugador=cedula, correojugador=correo)
+        validate_email(correo)
+      except ValidationError:
+        messages.error(request, "El correo electrónico ingresado no es válido.")
+        return redirect('registro_jugador')
+
+      try:
+        validate_password(password)
+      except ValidationError as e:
+        messages.error(request, " ".join(e.messages))
+        return redirect('registro_jugador')
+
+      try:
+        # Transacción atómica: usuario y perfil de jugador se crean juntos o ninguno
+        with transaction.atomic():
+          user = User.objects.create_user(username=cedula, email=correo, password=password, first_name=nombres, last_name=apellidos)
+          Jugador.objects.create(aliasjugador=alias, nombresjugador=nombres, apellidosjugador=apellidos, cedulaidentidadjugador=cedula, correojugador=correo)
         login(request, user)
         request.session['user_nombre'] = alias
         messages.success(request, f"¡Bienvenido a la sala de juegos, {alias}!")
         return redirect('inicio')
       except Exception as e:
-        if 'user' in locals() and user.id: user.delete()
+        logger.exception("Error registrando jugador")
         messages.error(request, f"Error: {str(e)}")
         return redirect('registro_jugador')
   return render(request, 'cuentas/registro_jugador.html')
@@ -278,6 +336,11 @@ def perfil(request):
       if action == 'actualizar_datos':
         nuevo_correo = request.POST.get('correo')
         if nuevo_correo:
+          try:
+            validate_email(nuevo_correo)
+          except ValidationError:
+            messages.error(request, "El correo electrónico ingresado no es válido.")
+            return redirect('perfil')
           user.email = nuevo_correo
           user.save()
         
@@ -305,6 +368,12 @@ def perfil(request):
         nueva = request.POST.get('password_nueva')
         
         if user.check_password(actual):
+          # SEGURIDAD: la nueva clave debe cumplir las reglas de robustez
+          try:
+            validate_password(nueva, user=user)
+          except ValidationError as e:
+            messages.error(request, " ".join(e.messages))
+            return redirect('perfil')
           user.set_password(nueva)
           user.save()
           update_session_auth_hash(request, user)
@@ -324,42 +393,53 @@ def perfil(request):
         fecha_nacimiento_str = request.POST.get('fecha_nacimiento')
         sexo = request.POST.get('sexo')
         
+        # SEGURIDAD: mismas validaciones de integridad que en el registro normal
+        if not cedula or not cedula.isdigit() or len(cedula) != 10:
+          messages.error(request, "La cédula debe tener exactamente 10 dígitos numéricos.")
+          return redirect('perfil')
+        if not telefono or not telefono.isdigit() or len(telefono) != 10:
+          messages.error(request, "El teléfono debe tener exactamente 10 dígitos numéricos.")
+          return redirect('perfil')
+
         try:
           fecha_nac = datetime.strptime(fecha_nacimiento_str, '%Y-%m-%d').date()
           tipo_base = TipoSocio.objects.first()
-          
-          # 1. Creamos el Socio con los datos EXACTOS y legales que el usuario llenó
-          nuevo_socio = Socio.objects.create(
-            idtiposocio=tipo_base,
-            primernombresocio=primer_nombre,
-            segundonombresocio=segundo_nombre,
-            primerapellidosocio=primer_apellido,
-            segundoapellidosocio=segundo_apellido,
-            cisocio=cedula,
-            fechanacimientosocio=fecha_nac,
-            telefonopersonalsocio=telefono,
-            direcciondomiciliosocio=direccion,
-            sexosocio=sexo,
-            estadosocio='Activo'
-          )
-          
-          # 2. Actualizamos el User base de Django por si corrigió su cédula o nombres al ascender
-          user.username = cedula
-          user.first_name = primer_nombre
-          user.last_name = primer_apellido
-          user.save()
-          
-          # 3. Vinculamos al jugador
-          jugador.idsocio = nuevo_socio
-          
-          # 4. Limpiamos la redundancia (Vaciamos los datos del jugador como pediste)
-          jugador.nombresjugador = None
-          jugador.apellidosjugador = None
-          
-          jugador.save()
-          
+
+          # Transacción atómica: Socio, User y Jugador se actualizan juntos o ninguno
+          with transaction.atomic():
+            # 1. Creamos el Socio con los datos EXACTOS y legales que el usuario llenó
+            nuevo_socio = Socio.objects.create(
+              idtiposocio=tipo_base,
+              primernombresocio=primer_nombre,
+              segundonombresocio=segundo_nombre,
+              primerapellidosocio=primer_apellido,
+              segundoapellidosocio=segundo_apellido,
+              cisocio=cedula,
+              fechanacimientosocio=fecha_nac,
+              telefonopersonalsocio=telefono,
+              direcciondomiciliosocio=direccion,
+              sexosocio=sexo,
+              estadosocio='Activo'
+            )
+
+            # 2. Actualizamos el User base de Django por si corrigió su cédula o nombres al ascender
+            user.username = cedula
+            user.first_name = primer_nombre
+            user.last_name = primer_apellido
+            user.save()
+
+            # 3. Vinculamos al jugador
+            jugador.idsocio = nuevo_socio
+
+            # 4. Limpiamos la redundancia (Vaciamos los datos del jugador como pediste)
+            jugador.nombresjugador = None
+            jugador.apellidosjugador = None
+
+            jugador.save()
+
           messages.success(request, "¡Felicidades! Ahora eres Socio oficial. Tus datos legales han sido registrados con éxito.")
         except Exception as e:
+          logger.exception("Error al ascender jugador a socio")
           messages.error(request, f"Error al procesar la solicitud de socio: {str(e)}")
 
     except Exception as e:
@@ -390,9 +470,12 @@ def perfil(request):
 
 @login_required
 def mis_cartones(request):
-  try:
-    jugador = Jugador.objects.get(correojugador=request.user.email)
-  except Jugador.DoesNotExist:
+  # FIX: se busca por cédula (username) como en el resto del sistema,
+  # con el correo como respaldo para cuentas antiguas.
+  jugador = Jugador.objects.filter(cedulaidentidadjugador=request.user.username).first()
+  if not jugador and request.user.email:
+    jugador = Jugador.objects.filter(correojugador=request.user.email).first()
+  if not jugador:
     return redirect('inicio')
     
   cartones_jugador = CartonPartidaBingo.objects.filter(idjugador=jugador).select_related(
@@ -551,7 +634,7 @@ def dashboard(request):
           primera_partida = PartidaBingo.objects.filter(idbingo=bingo).order_by('idpartidabingo').first()
           if primera_partida and primera_partida.estadopartida == 'Programada':
             primera_partida.estadopartida = 'En Juego'
-            primera_partida.horainiciopartida = timezone.now() # CORREGIDO A horainiciopartida
+            primera_partida.horainicio = timezone.now()  # FIX: el campo del modelo es 'horainicio'
             primera_partida.save()
             messages.success(request, "¡Bingo iniciado! La primera ronda ha comenzado automáticamente.")
         # ==========================================================
@@ -626,13 +709,24 @@ def dashboard(request):
         config.save()
         messages.success(request, "Configuración del sitio web actualizada correctamente.")
       elif action == 'generar_cartones':
+        # FIX: antes se creaban los cartones en línea Y ADEMÁS se enviaba la misma
+        # cantidad a Celery, duplicando el inventario cuando el worker estaba activo.
+        # Ahora: lotes grandes van a Celery; lotes pequeños (o sin worker) se crean en línea.
         cantidad = int(request.POST.get('cantidad_cartones', 0))
-        if cantidad > 0:
-          lote = generar_lote_cartones(cantidad)
-          cartones_db = [Carton(codigocarton=c['codigo'], matriznumeros=c['matriz'], esmaestro=True) for c in lote]
-          Carton.objects.bulk_create(cartones_db)
-          fabricar_cartones_maestros_task.delay(cantidad)
-          messages.success(request, f"¡Orden enviada a la fábrica! Se están estampando {cantidad} cartones RNG en segundo plano.")
+        if cantidad <= 0 or cantidad > 5000:
+          messages.error(request, "La cantidad de cartones debe estar entre 1 y 5000.")
+          return redirect('dashboard')
+        if cantidad > 200:
+          try:
+            fabricar_cartones_maestros_task.delay(cantidad)
+            messages.success(request, f"¡Orden enviada a la fábrica! Se están estampando {cantidad} cartones RNG en segundo plano.")
+            return redirect('dashboard')
+          except Exception:
+            logger.warning("Celery no disponible; generando cartones en línea.")
+        lote = generar_lote_cartones(cantidad)
+        cartones_db = [Carton(codigocarton=c['codigo'], matriznumeros=c['matriz'], esmaestro=True) for c in lote]
+        Carton.objects.bulk_create(cartones_db)
+        messages.success(request, f"¡Listo! Se estamparon {cantidad} cartones RNG en el inventario.")
       elif action == 'eliminar_carton':
         Carton.objects.get(idcarton=request.POST.get('id_carton')).delete()
         messages.success(request, "Cartón retirado del inventario general.")
@@ -688,57 +782,39 @@ def dashboard(request):
     'anio': {'socios': 0, 'jugadores': 0, 'ganancias': 0},
   }
 
+  def acumular(clave, fecha, monto=None):
+    """Suma 1 (o el monto) en cada periodo del gráfico que cubra la fecha dada."""
+    valor = 1 if monto is None else monto
+    if fecha == hoy.date(): datos_graficos['hoy'][clave] += valor
+    if fecha == ayer.date(): datos_graficos['ayer'][clave] += valor
+    if fecha >= inicio_semana.date(): datos_graficos['semana'][clave] += valor
+    if fecha >= inicio_mes.date(): datos_graficos['mes'][clave] += valor
+    if fecha >= inicio_anio.date(): datos_graficos['anio'][clave] += valor
+
   try:
-    # 1. Procesar Ganancias Reales (¡Usando la tabla Carton correcta!)
-    cartones_db = Carton.objects.all()
-    for c in cartones_db:
-      # Buscamos el atributo correcto sin importar cómo se llame exactamente
-      fecha_obj = getattr(c, 'fechacompra', getattr(c, 'fecha_creacion', getattr(c, 'fecha', None)))
-      if fecha_obj:
-        fecha = fecha_obj.date() if hasattr(fecha_obj, 'date') else fecha_obj
-        monto = float(getattr(c, 'preciopagado', 0) or 0)
-        
-        if fecha == hoy.date(): datos_graficos['hoy']['ganancias'] += monto
-        if fecha == ayer.date(): datos_graficos['ayer']['ganancias'] += monto
-        if fecha >= inicio_semana.date(): datos_graficos['semana']['ganancias'] += monto
-        if fecha >= inicio_mes.date(): datos_graficos['mes']['ganancias'] += monto
-        if fecha >= inicio_anio.date(): datos_graficos['anio']['ganancias'] += monto
+    # 1. Ganancias reales: las ventas viven en CartonPartidaBingo (precio y fecha de compra).
+    #    FIX: antes se recorría Carton, que no tiene precio ni fecha, y el gráfico siempre daba 0.
+    ventas = CartonPartidaBingo.objects.filter(fechacompra__isnull=False).values_list('fechacompra', 'preciopagado')
+    for fecha_compra, precio in ventas:
+      acumular('ganancias', fecha_compra.date(), float(precio or 0))
 
-    # 2. Procesar Socios Registrados
-    socios_db = Socio.objects.select_related('idusuario').all()
-    for s in socios_db:
-      fecha = None
-      if hasattr(s, 'idusuario') and s.idusuario and hasattr(s.idusuario, 'date_joined'):
-        fecha = s.idusuario.date_joined.date()
-        
-      if fecha:
-        if fecha == hoy.date(): datos_graficos['hoy']['socios'] += 1
-        if fecha == ayer.date(): datos_graficos['ayer']['socios'] += 1
-        if fecha >= inicio_semana.date(): datos_graficos['semana']['socios'] += 1
-        if fecha >= inicio_mes.date(): datos_graficos['mes']['socios'] += 1
-        if fecha >= inicio_anio.date(): datos_graficos['anio']['socios'] += 1
-      else:
-        for k in datos_graficos: datos_graficos[k]['socios'] += 1
+    # 2. Fechas de registro: el User de Django (username = cédula) guarda date_joined.
+    #    FIX: Socio/Jugador no tienen campo 'idusuario'; se cruza por cédula.
+    fechas_usuarios = dict(User.objects.values_list('username', 'date_joined'))
 
-    # 3. Procesar Jugadores
-    jugadores_db = Jugador.objects.all()
-    for j in jugadores_db:
-      fecha = None
-      if hasattr(j, 'idusuario') and j.idusuario and hasattr(j.idusuario, 'date_joined'):
-        fecha = j.idusuario.date_joined.date()
-        
-      if fecha:
-        if fecha == hoy.date(): datos_graficos['hoy']['jugadores'] += 1
-        if fecha == ayer.date(): datos_graficos['ayer']['jugadores'] += 1
-        if fecha >= inicio_semana.date(): datos_graficos['semana']['jugadores'] += 1
-        if fecha >= inicio_mes.date(): datos_graficos['mes']['jugadores'] += 1
-        if fecha >= inicio_anio.date(): datos_graficos['anio']['jugadores'] += 1
-      else:
-        for k in datos_graficos: datos_graficos[k]['jugadores'] += 1
-        
-  except Exception as e:
-    # Si algo explota silenciosamente, lo ignoramos para NO TIRAR LA PÁGINA
-    print(f"Error en el motor del gráfico: {e}")
+    for cedula_socio in Socio.objects.values_list('cisocio', flat=True):
+      registro = fechas_usuarios.get(cedula_socio)
+      if registro:
+        acumular('socios', registro.date())
+
+    for cedula_jugador in Jugador.objects.values_list('cedulaidentidadjugador', flat=True):
+      registro = fechas_usuarios.get(cedula_jugador)
+      if registro:
+        acumular('jugadores', registro.date())
+
+  except Exception:
+    # Si algo explota, lo registramos sin tirar la página del dashboard
+    logger.exception("Error en el motor estadístico del dashboard")
   # ====================================================================
 
   contexto = {
@@ -801,6 +877,16 @@ def reporte_socios_puntuales(request):
       f"{aportes_al_dia} de {total_aportes} Al Día",
       clasificacion
     ])
+
+  # FIX: la vista nunca devolvía el archivo generado (faltaba el HttpResponse)
+  for col in ws.columns:
+    max_len = max(len(str(cell.value or '')) for cell in col)
+    ws.column_dimensions[openpyxl.utils.get_column_letter(col[0].column)].width = max(max_len + 3, 12)
+
+  response = HttpResponse(content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+  response['Content-Disposition'] = f'attachment; filename="Socios_Estrella_{timezone.now().strftime("%Y%m%d")}.xlsx"'
+  wb.save(response)
+  return response
 
 @login_required
 def reporte_liquidacion_bingo(request, id_bingo):
@@ -882,9 +968,12 @@ def reporte_cartera_prestamos(request):
 def reporte_caja_semanal_pdf(request):
   if not request.user.is_staff: return redirect('inicio')
   
-  aportes = AporteSemanal.objects.all().select_related('idsocio').order_by('-fechaplanificadadada', 'idsocio__primerapellidosocio')
-  total_recaudado = aportes.filter(estadoaporte='Al Dia').aggregate(total=Sum('montoaportesemanal'))['total'] or 0
-  total_pendiente = aportes.filter(estadoaporte='Pendiente').aggregate(total=Sum('montoaportesemanal'))['total'] or 0
+  # FIX: AporteSemanal no tiene campo 'montoaportesemanal' (lanzaba FieldError).
+  # El valor económico del aporte es el del regalo asignado (idregalo.valorregalo),
+  # y el estado "vencido" real del modelo es 'Atrasado', no 'Pendiente'.
+  aportes = AporteSemanal.objects.all().select_related('idsocio', 'idregalo').order_by('-fechaplanificadadada', 'idsocio__primerapellidosocio')
+  total_recaudado = aportes.filter(estadoaporte='Al Dia').aggregate(total=Sum('idregalo__valorregalo'))['total'] or 0
+  total_pendiente = aportes.filter(estadoaporte='Atrasado').aggregate(total=Sum('idregalo__valorregalo'))['total'] or 0
 
   template = get_template('administrador/reporte_caja_pdf.html')
   context = {
@@ -931,46 +1020,70 @@ def venta_cartones(request):
       messages.error(request, "No seleccionaste ni generaste ningún cartón para comprar.")
       return redirect('venta_cartones')
 
-    cartones_ya_comprados = CartonPartidaBingo.objects.filter(idjugador=jugador, idpartida__idbingo=bingo).values('idcarton').distinct().count()
+    # =========================================================
+    # SEGURIDAD: NO CONFIAR EN LAS MATRICES QUE MANDA EL NAVEGADOR
+    # Un jugador malicioso podría inyectar un cartón inventado.
+    # Validamos estructura, rangos B-I-N-G-O y casilla FREE.
+    # =========================================================
+    for c_data in cartones_generados:
+      if not isinstance(c_data, dict) or not validar_matriz_carton(c_data.get('matriz')):
+        messages.error(request, "Uno de los cartones generados no es válido. Refresca la página e inténtalo de nuevo.")
+        return redirect('venta_cartones')
+      codigo = str(c_data.get('codigo', ''))
+      if not codigo or len(codigo) > 30:
+        messages.error(request, "Código de cartón inválido. Refresca la página e inténtalo de nuevo.")
+        return redirect('venta_cartones')
 
-    
+    cartones_ya_comprados = CartonPartidaBingo.objects.filter(idjugador=jugador, idpartida__idbingo=bingo).values('idcarton').distinct().count()
+    if cartones_ya_comprados + cantidad_total_compra > MAX_CARTONES_POR_BINGO:
+      messages.error(request, f"Límite alcanzado: máximo {MAX_CARTONES_POR_BINGO} cartones por evento (ya tienes {cartones_ya_comprados}).")
+      return redirect('venta_cartones')
 
     precio_unitario = bingo.preciocarton
     total_pagar = precio_unitario * cantidad_total_compra
 
-    if jugador.saldocreditojugador < total_pagar:
-      messages.error(request, f"Fondos insuficientes. El total es ${total_pagar} y dispones de ${jugador.saldocreditojugador}.")
-      return redirect('venta_cartones')
-
     partidas = PartidaBingo.objects.filter(idbingo=bingo)
-    cartones_a_asignar = []
-
-    if cartones_catalogo_ids:
-      usados = CartonPartidaBingo.objects.filter(idpartida__in=partidas, idcarton__in=cartones_catalogo_ids).exists()
-      if usados:
-        messages.error(request, "Oops. Un jugador más rápido compró uno de los cartones de catálogo que elegiste. Vuelve a intentarlo.")
-        return redirect('venta_cartones')
-      catalogo_validos = Carton.objects.filter(idcarton__in=cartones_catalogo_ids)
-      cartones_a_asignar.extend(list(catalogo_validos))
-
-    if cartones_generados:
-      nuevos_cartones_db = [Carton(codigocarton=c_data['codigo'], matriznumeros=c_data['matriz'], esmaestro=False) for c_data in cartones_generados]
-      Carton.objects.bulk_create(nuevos_cartones_db)
-      codigos_creados = [c['codigo'] for c in cartones_generados]
-      cartones_temporales = Carton.objects.filter(codigocarton__in=codigos_creados)
-      cartones_a_asignar.extend(list(cartones_temporales))
 
     try:
-      jugador.saldocreditojugador -= total_pagar
-      jugador.save()
+      # =========================================================
+      # SEGURIDAD: TRANSACCIÓN ATÓMICA CON BLOQUEO DE FILA
+      # Evita dobles compras simultáneas y saldos negativos.
+      # =========================================================
+      with transaction.atomic():
+        jugador_bloqueado = Jugador.objects.select_for_update().get(pk=jugador.pk)
 
-      nuevas_asignaciones = []
-      for carton in cartones_a_asignar:
-        for partida in partidas:
-          nuevas_asignaciones.append(CartonPartidaBingo(idjugador=jugador, idpartida=partida, idcarton=carton, preciopagado=precio_unitario, estadocarton='Vendido', fechacompra=datetime.now()))
-      
-      if nuevas_asignaciones:
-        CartonPartidaBingo.objects.bulk_create(nuevas_asignaciones)
+        if jugador_bloqueado.saldocreditojugador < total_pagar:
+          messages.error(request, f"Fondos insuficientes. El total es ${total_pagar} y dispones de ${jugador_bloqueado.saldocreditojugador}.")
+          return redirect('venta_cartones')
+
+        cartones_a_asignar = []
+
+        if cartones_catalogo_ids:
+          usados = CartonPartidaBingo.objects.filter(idpartida__in=partidas, idcarton__in=cartones_catalogo_ids).exists()
+          if usados:
+            messages.error(request, "Oops. Un jugador más rápido compró uno de los cartones de catálogo que elegiste. Vuelve a intentarlo.")
+            return redirect('venta_cartones')
+          catalogo_validos = Carton.objects.filter(idcarton__in=cartones_catalogo_ids)
+          cartones_a_asignar.extend(list(catalogo_validos))
+
+        if cartones_generados:
+          nuevos_cartones_db = [Carton(codigocarton=c_data['codigo'], matriznumeros=c_data['matriz'], esmaestro=False) for c_data in cartones_generados]
+          Carton.objects.bulk_create(nuevos_cartones_db)
+          codigos_creados = [c['codigo'] for c in cartones_generados]
+          cartones_temporales = Carton.objects.filter(codigocarton__in=codigos_creados)
+          cartones_a_asignar.extend(list(cartones_temporales))
+
+        jugador_bloqueado.saldocreditojugador -= total_pagar
+        jugador_bloqueado.save()
+        jugador = jugador_bloqueado
+
+        nuevas_asignaciones = []
+        for carton in cartones_a_asignar:
+          for partida in partidas:
+            nuevas_asignaciones.append(CartonPartidaBingo(idjugador=jugador, idpartida=partida, idcarton=carton, preciopagado=precio_unitario, estadocarton='Vendido', fechacompra=timezone.now()))
+
+        if nuevas_asignaciones:
+          CartonPartidaBingo.objects.bulk_create(nuevas_asignaciones)
       
       # ==========================================
       # MAGIA 5: AVISAR A LA TIENDA EN TIEMPO REAL
@@ -1001,7 +1114,7 @@ def venta_cartones(request):
   bingos_data = []
   for b in bingos_disponibles:
     comprados = CartonPartidaBingo.objects.filter(idjugador=jugador, idpartida__idbingo=b).values('idcarton').distinct().count()
-    porcentaje_barra = min(int((comprados / 15) * 100), 100)
+    porcentaje_barra = min(int((comprados / MAX_CARTONES_POR_BINGO) * 100), 100)
     usados_ids = CartonPartidaBingo.objects.filter(idpartida__idbingo=b).values_list('idcarton', flat=True)
     catalogo = Carton.objects.filter(esmaestro=True).exclude(idcarton__in=usados_ids)[:12]
 
@@ -1225,7 +1338,7 @@ def tablero_admin(request, id_partida):
     if action == 'iniciar_partida' and partida.estadopartida == 'Programada':
       # 1. Actualizamos la ronda actual
       partida.estadopartida = 'En Juego'
-      partida.horainiciopartida = timezone.now()
+      partida.horainicio = timezone.now()  # FIX: el campo del modelo es 'horainicio'
       partida.save()
       
       # 2. FIX: ACTUALIZAR EL BINGO PADRE A 'EN CURSO'
@@ -1717,7 +1830,9 @@ def sacar_bola_api(request, id_partida):
   if not bolas_disponibles:
     return JsonResponse({'error': 'No hay más bolas disponibles'}, status=400)
 
-  nueva_bola = random.choice(bolas_disponibles)
+  # SEGURIDAD: secrets usa el RNG del sistema operativo (no predecible),
+  # apropiado para un sorteo con premios en dinero.
+  nueva_bola = secrets.choice(bolas_disponibles)
   bolas_llamadas.append(nueva_bola)
 
   # 3. Guardar en Base de Datos

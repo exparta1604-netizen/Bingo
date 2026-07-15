@@ -2,6 +2,17 @@
    BINGO SOCKET JS - Motor de Tiempo Real
    ========================================= */
 
+// SEGURIDAD (XSS): todo dato que venga de otros usuarios (mensajes de chat,
+// alias, avisos) debe escaparse antes de insertarse con innerHTML.
+function escapeHtml(valor) {
+    return String(valor == null ? '' : valor)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
 const BINGO_VAR = typeof window.BINGO_CONFIG !== 'undefined' ? window.BINGO_CONFIG : (typeof BINGO_CONFIG !== 'undefined' ? BINGO_CONFIG : null);
 
 if (BINGO_VAR) {
@@ -74,7 +85,7 @@ if (BINGO_VAR) {
                                 <div class="d-flex">
                                     <div class="toast-body fs-6 fw-bold text-center w-100 p-3">
                                         <i class="fas fa-bullhorn fs-4 d-block mb-2 text-warning"></i> 
-                                        ${payload.datos.mensaje}
+                                        ${escapeHtml(payload.datos.mensaje)}
                                     </div>
                                     <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="Close"></button>
                                 </div>
@@ -116,12 +127,12 @@ if (BINGO_VAR) {
                     nuevoMensaje.className = `mb-3 d-flex flex-column ${esMiMensaje ? 'align-items-end' : 'align-items-start'} animate__animated animate__fadeInUp animate__faster`;
                     const colorFondo = esMiMensaje ? 'bg-primary text-white shadow-sm' : 'bg-light text-dark border shadow-sm';
                     const colorNombre = esMiMensaje ? 'text-primary' : 'text-secondary';
-                    const nombreAlias = esMiMensaje ? 'Tú' : payload.usuario;
+                    const nombreAlias = esMiMensaje ? 'Tú' : escapeHtml(payload.usuario);
                     
                     nuevoMensaje.innerHTML = `
                         <span class="small fw-bold ${colorNombre} mb-1 px-1" style="font-size: 0.70rem; letter-spacing: 0.5px;">${nombreAlias}</span>
                         <div class="px-3 py-2 rounded-4 ${colorFondo}" style="max-width: 90%; word-break: break-word; font-size: 0.9rem; line-height: 1.4;">
-                            ${payload.mensaje}
+                            ${escapeHtml(payload.mensaje)}
                         </div>
                     `;
                     cajaChat.appendChild(nuevoMensaje);
@@ -146,21 +157,22 @@ if (BINGO_VAR) {
                     htmlAdmin = `<li class="list-group-item text-center text-muted py-4"><i class="fas fa-ghost mb-2 fs-3"></i><br>Nadie en la sala</li>`;
                 } else {
                     listaJugadores.forEach(alias => {
-                        const inicial = alias.charAt(0).toUpperCase();
+                        const aliasSeguro = escapeHtml(alias);
+                        const inicial = escapeHtml(alias.charAt(0).toUpperCase());
                         
                         htmlJugadores += `
-                            <li class="list-group-item bg-transparent text-body d-flex align-items-center py-3 animate__animated animate__fadeIn" data-alias="${alias}">
+                            <li class="list-group-item bg-transparent text-body d-flex align-items-center py-3 animate__animated animate__fadeIn" data-alias="${aliasSeguro}">
                                 <div class="text-white rounded-circle d-flex justify-content-center align-items-center me-3 flex-shrink-0" 
                                      style="width: 35px; height: 35px; font-weight: bold; background-color: #4F46E5;">
                                     ${inicial}
                                 </div>
-                                <span class="fw-bold text-truncate">${alias}</span>
+                                <span class="fw-bold text-truncate">${aliasSeguro}</span>
                             </li>`;
                             
                         htmlAdmin += `
-                            <li class="list-group-item d-flex align-items-center py-2 animate__animated animate__fadeIn border-light" data-alias="${alias}">
+                            <li class="list-group-item d-flex align-items-center py-2 animate__animated animate__fadeIn border-light" data-alias="${aliasSeguro}">
                                 <i class="fas fa-user-circle text-primary me-2 fs-4"></i>
-                                <span class="fw-bold text-secondary text-truncate">${alias}</span>
+                                <span class="fw-bold text-secondary text-truncate">${aliasSeguro}</span>
                             </li>`;
                     });
                 }

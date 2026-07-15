@@ -35,6 +35,33 @@ def generar_lote_cartones(cantidad):
       })
   return nuevos_cartones
 
+def validar_matriz_carton(matriz):
+  """
+  SEGURIDAD: valida que una matriz recibida del navegador sea un cartón legal.
+  Estructura esperada: {'B': [...], 'I': [...], 'N': [...], 'G': [...], 'O': [...]}
+  con 5 valores por columna, rangos correctos (B:1-15 ... O:61-75), sin números
+  repetidos y con la casilla central de la N marcada como 'FREE'.
+  """
+  rangos = {'B': (1, 15), 'I': (16, 30), 'N': (31, 45), 'G': (46, 60), 'O': (61, 75)}
+  if not isinstance(matriz, dict) or set(matriz.keys()) != set(rangos.keys()):
+    return False
+  for letra, (minimo, maximo) in rangos.items():
+    columna = matriz[letra]
+    if not isinstance(columna, list) or len(columna) != 5:
+      return False
+    numeros = []
+    for indice, valor in enumerate(columna):
+      if letra == 'N' and indice == 2:
+        if str(valor).upper() != 'FREE':
+          return False
+        continue
+      if isinstance(valor, bool) or not isinstance(valor, int) or not (minimo <= valor <= maximo):
+        return False
+      numeros.append(valor)
+    if len(set(numeros)) != len(numeros):
+      return False
+  return True
+
 # =========================================================
 # GESTIÓN DE PERFILES, BORRADO LÓGICO Y CREDENCIALES
 # =========================================================
