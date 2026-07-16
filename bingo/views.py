@@ -9,7 +9,7 @@ from .models import (
     PlataformaJuego, SesionJuego, Regalo, AporteSemanal, ConfiguracionWeb, UnidadMonetaria, MensajeChat
 )
 from .services import (
-    generar_matriz_bingo, generar_lote_cartones, actualizar_socio_y_credenciales,
+    generar_lote_cartones, actualizar_socio_y_credenciales,
     actualizar_jugador_y_credenciales, actualizar_avatar_perfil, validar_carton_hibrido,
     validar_matriz_carton
 )
@@ -907,13 +907,9 @@ def reporte_liquidacion_bingo(request, id_bingo):
   cartones_vendidos = CartonPartidaBingo.objects.filter(idpartida__idbingo=bingo).values('idcarton').distinct().count()
   ingresos_totales = cartones_vendidos * bingo.preciocarton
   
-  # Manejo adaptativo de campos por si la base varía el nombre del premio
-  premios_entregados = 0
-  try: premios_entregados = PartidaBingo.objects.filter(idbingo=bingo).aggregate(total=Sum('valorpremio'))['total'] or 0
-  except:
-    try: premios_entregados = PartidaBingo.objects.filter(idbingo=bingo).aggregate(total=Sum('valorefectivo'))['total'] or 0
-    except: pass
-    
+  premios_entregados = PartidaBingo.objects.filter(idbingo=bingo).aggregate(total=Sum('valorpremio'))['total'] or 0
+
+
   utilidad_neta = ingresos_totales - premios_entregados
 
   ws.append(['INGRESOS', f'Recaudación por Cartones ({cartones_vendidos} x ${bingo.preciocarton})', ingresos_totales])

@@ -1,4 +1,5 @@
 {% extends 'comunes/base.html' %}
+{% load static %}
 
 {% block title %}Consola de Administración Suprema - CoopBingo{% endblock %}
 
@@ -303,7 +304,7 @@
                                                 <td class="font-monospace fw-bold">{{ py.numeroreferencia|default:"S/N" }}</td>
                                                 <td class="fw-bold text-success">${{ py.montopagado }}</td>
                                                 <td>{{ py.idmetodopago.nombremetodopago }}</td>
-                                                <td><span class="badge {% if py.estadpago == 'Validado' %}bg-success-subtle text-success{% else %}bg-warning-subtle text-warning{% endif %}">{{ py.estadpago }}</span></td>
+                                                <td><span class="badge {% if py.estadopago == 'Validado' %}bg-success-subtle text-success{% else %}bg-warning-subtle text-warning{% endif %}">{{ py.estadopago }}</span></td>
                                             </tr>
                                             {% endfor %}
                                         </tbody>
@@ -960,7 +961,7 @@
                         <select name="idbingo" id="select_bingo_partida" class="form-select bg-transparent" required>
                             {% for b in bingos %}
                                 <option value="{{ b.idbingo }}">
-                                    {{ b.titulobingo }} (Moneda: {{ b.idunidadmonetaria.nombreunidadmonetaria|default:"Estándar" }})
+                                    {{ b.titulobingo }} (Moneda: {{ b.idunidadmonetaria.nombremoneda|default:"Estándar" }})
                                 </option>
                             {% endfor %}
                         </select>
@@ -1150,6 +1151,10 @@
                         <div class="col-12">
                             <label class="form-label small fw-bold">Detalle Premio Principal</label>
                             <input type="text" name="descripcionpremiomayor" class="form-control bg-transparent" value="{{ b.descripcionpremiomayor }}" required>
+                        </div>
+                        <div class="col-12">
+                            <label class="form-label small fw-bold">Descripción Otros Premios (Opcional)</label>
+                            <textarea name="descripcionpremios" class="form-control bg-transparent" rows="2">{{ b.descripcionpremios|default:'' }}</textarea>
                         </div>
                         <div class="col-md-6">
                             <label class="form-label small fw-bold">Fecha y Hora</label>
@@ -1734,7 +1739,7 @@
     }
 </script>
 
-<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script src="{% static 'vendor/chartjs/chart.umd.min.js' %}"></script>
 <script>
     document.addEventListener("DOMContentLoaded", function() {
         const canvas = document.getElementById('graficoRendimiento');

@@ -20,7 +20,7 @@ class BingoGameTest(TestCase):
 
     def setUp(self):
         print("\n" + "="*80)
-        print("🔧 PREPARANDO ESCENARIO DE PRUEBA")
+        print("[SETUP] PREPARANDO ESCENARIO DE PRUEBA")
         print("="*80)
         
         # 1. Tipo de Socio
@@ -99,13 +99,13 @@ class BingoGameTest(TestCase):
             defaults={'urlplataforma': 'http://localhost:8000/', 'estadoplataforma': True}
         )
         
-        print("✅ Escenario preparado correctamente")
+        print("[OK] Escenario preparado correctamente")
         print("="*80 + "\n")
 
     # ==================== TESTS CORREGIDOS ====================
 
     def test_01_crear_partida(self):
-        print("\n🎲 TEST 1: Crear Partida")
+        print("\n[TEST 1] Crear Partida")
         partida = PartidaBingo.objects.create(
             idbingo=self.bingo,
             nombreronda='RONDA 1',
@@ -117,10 +117,10 @@ class BingoGameTest(TestCase):
             ultimabola=0
         )
         self.assertEqual(partida.estadopartida, 'Programada')
-        print(f"✅ Partida creada: {partida.nombreronda}")
+        print(f"[OK] Partida creada: {partida.nombreronda}")
 
     def test_02_compra_cartones(self):
-        print("\n💰 TEST 2: Compra de Cartones")
+        print("\n[TEST 2] Compra de Cartones")
         partida = PartidaBingo.objects.create(
             idbingo=self.bingo,
             nombreronda='RONDA COMPRA',
@@ -142,10 +142,10 @@ class BingoGameTest(TestCase):
             )
             jugador.saldocreditojugador -= self.bingo.preciocarton
             jugador.save()
-            print(f"✅ {jugador.aliasjugador} compró cartón {carton.codigocarton}")
+            print(f"[OK] {jugador.aliasjugador} compró cartón {carton.codigocarton}")
 
     def test_03_iniciar_partida(self):
-        print("\n▶️  TEST 3: Iniciar Partida")
+        print("\n[TEST 3] Iniciar Partida")
         partida = PartidaBingo.objects.create(
             idbingo=self.bingo,
             nombreronda='RONDA INICIO',
@@ -159,10 +159,10 @@ class BingoGameTest(TestCase):
         partida.save()
         self.bingo.estadobingo = 'En Curso'
         self.bingo.save()
-        print(f"✅ Partida iniciada correctamente")
+        print(f"[OK] Partida iniciada correctamente")
 
     def test_04_sistema_bolas(self):
-        print("\n🎰 TEST 4: Sistema de Bolas")
+        print("\n[TEST 4] Sistema de Bolas")
         partida = PartidaBingo.objects.create(
             idbingo=self.bingo,
             nombreronda='RONDA BOLAS',
@@ -185,10 +185,10 @@ class BingoGameTest(TestCase):
             partida.bolascantadas = ",".join(map(str, bolas_llamadas))
             partida.save()
         self.assertEqual(len(set(bolas_extraidas)), len(bolas_extraidas))
-        print(f"✅ Se extrajeron {len(bolas_extraidas)} bolas sin duplicados")
+        print(f"[OK] Se extrajeron {len(bolas_extraidas)} bolas sin duplicados")
 
     def test_05_marcar_numeros(self):
-        print("\n✏️  TEST 5: Marcar Números (Corregido)")
+        print("\n[TEST 5] Marcar Números (Corregido)")
         partida = PartidaBingo.objects.create(
             idbingo=self.bingo,
             nombreronda='RONDA MARCADO',
@@ -208,7 +208,7 @@ class BingoGameTest(TestCase):
                 if num != "FREE":
                     numeros_reales.append(num)
         
-        # 👇 FIX: seleccionamos los números que vamos a marcar y los
+        # FIX: seleccionamos los números que vamos a marcar y los
         # "cantamos" en la partida ANTES de intentar marcarlos, ya que
         # marcar_casilla_manual exige que el número ya haya salido.
         numeros_a_marcar = numeros_reales[:8]  # Marcamos 8 números seguros
@@ -239,10 +239,10 @@ class BingoGameTest(TestCase):
             self.assertTrue(resultado, f"No se pudo marcar el número {numero}")
         
         asignacion.refresh_from_db()
-        print(f"✅ Se marcaron {asignacion.cantidadaciertos} números correctamente")
+        print(f"[OK] Se marcaron {asignacion.cantidadaciertos} números correctamente")
 
     def test_06_patrones_bingo(self):
-        print("\n🏆 TEST 6: Patrones de Victoria (Corregido)")
+        print("\n[TEST 6] Patrones de Victoria (Corregido)")
         matriz = {
             'B': [1, 2, 3, 4, 5],
             'I': [16, 17, 18, 19, 20],
@@ -254,14 +254,14 @@ class BingoGameTest(TestCase):
         
         self.assertTrue(auditar_patron_bingo(matriz, bolas, 'Tabla Llena'))
         self.assertTrue(auditar_patron_bingo(matriz, [1,5,31,35,61,65], 'Las Cuatro Esquinas'))
-        # 👇 FIX: "Linea Vertical" = una columna completa (ej. columna B: 1,2,3,4,5),
+        # FIX: "Linea Vertical" = una columna completa (ej. columna B: 1,2,3,4,5),
         # no un número de cada columna (eso sería una fila/horizontal).
         self.assertTrue(auditar_patron_bingo(matriz, [1,2,3,4,5], 'Linea Vertical'))
         self.assertTrue(auditar_patron_bingo(matriz, [1,17,"FREE",49,65], 'En Diagonal'))
-        print("✅ Todos los patrones detectados correctamente")
+        print("[OK] Todos los patrones detectados correctamente")
 
     def test_07_finalizar_y_premio(self):
-        print("\n🎁 TEST 7: Finalizar y Asignar Premio")
+        print("\n[TEST 7] Finalizar y Asignar Premio")
         partida = PartidaBingo.objects.create(
             idbingo=self.bingo,
             nombreronda='RONDA FINAL',
@@ -282,11 +282,11 @@ class BingoGameTest(TestCase):
         jugador.saldocreditojugador += partida.valorpremio
         jugador.save()
         
-        print(f"✅ Premio de ${partida.valorpremio} asignado correctamente")
+        print(f"[OK] Premio de ${partida.valorpremio} asignado correctamente")
         self.assertGreater(jugador.saldocreditojugador, saldo_inicial)
 
     def test_08_desempate(self):
-        print("\n⚔️  TEST 8: Desempate")
+        print("\n[TEST 8] Desempate")
         partida = PartidaBingo.objects.create(
             idbingo=self.bingo,
             nombreronda='RONDA DESEMPATE',
@@ -308,10 +308,10 @@ class BingoGameTest(TestCase):
         partida.horafin = timezone.now()
         partida.save()
         
-        print(f"✅ Desempate resuelto correctamente - Ganador ID: {ganador_id}")
+        print(f"[OK] Desempate resuelto correctamente - Ganador ID: {ganador_id}")
 
     def test_09_multiples_rondas(self):
-        print("\n🔄 TEST 9: Múltiples Rondas")
+        print("\n[TEST 9] Múltiples Rondas")
         for i in range(3):
             ronda = PartidaBingo.objects.create(
                 idbingo=self.bingo,
@@ -341,8 +341,8 @@ class BingoGameTest(TestCase):
             ronda.estadopartida = 'Finalizada'
             ronda.horafin = timezone.now()
             ronda.save()
-            print(f"✅ Ronda {i+1} finalizada")
+            print(f"[OK] Ronda {i+1} finalizada")
         
         self.bingo.estadobingo = 'Finalizado'
         self.bingo.save()
-        print("✅ Bingo completado con múltiples rondas")
+        print("[OK] Bingo completado con múltiples rondas")

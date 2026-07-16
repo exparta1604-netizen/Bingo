@@ -294,7 +294,7 @@
     // -------------------------------------------------------------
     // FRENO INSTANTÁNEO SI ALGUIEN GRITA BINGO O SE PAUSA LA SALA
     // -------------------------------------------------------------
-    if (datos.evento === 'bingo_reclamado' || 
+    if (datos.evento === 'alerta_reclamo' ||
      (datos.evento === 'estado_cambiado' && (datos.nuevo_estado === 'Pausada' || datos.nuevo_estado === 'Finalizada'))) {
       apagarPilotoAutomatico();
     }
